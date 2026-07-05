@@ -189,7 +189,20 @@ def main():
 
     # テスト起動モード: env変数 WWM_TEST_USE_PYTHON=1 で app.py を直接実行 (exe の elevation 問題を回避)
     if os.environ.get("WWM_TEST_USE_PYTHON", "") == "1":
-        py_path = Path(r"<redacted>")
+        # Python パスの決定 (ハードコードしない)
+        # 優先順: 環境変数 WWM_PYTHON_PATH > 現在のプロセスの Python > PATH から検索
+        py_path = os.environ.get("WWM_PYTHON_PATH", "").strip()
+        if not py_path:
+            py_path = sys.executable  # 現在の Python を使う
+        py_path = Path(py_path)
+        if not py_path.exists():
+            # PATH から検索
+            found = shutil.which("python") or shutil.which("python3") or shutil.which("py")
+            if found:
+                py_path = Path(found)
+            else:
+                print(f"    [NG] Python が見つかりません。WWM_PYTHON_PATH 環境変数で指定してください。")
+                return 1
         app_py = Path(__file__).parent / "app.py"
         env["WWM_USE_PYTHON"] = "1"
         proc = subprocess.Popen(
