@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.spec
+
+# PyInstaller build (ソースのみで十分)
+build/
+*.spec
+
+# テスト環境の一時フォルダ
+# (WWM_TEST_USE_PYTHON=1 で生成される temp フォルダは .git 管理外)
+
+# Settings/codes.json は EXE と同じフォルダで管理されているため、
+# リポジトリには含めない
+settings.json
+codes.json
+codes.backup.json
+
+# テスト用ログ
+_exe_log.txt
+_exe_stdout.txt
+_exe_stderr.txt
+_dbg.txt
+_dbg_err.txt
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+.DS_Store
