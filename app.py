@@ -29,6 +29,7 @@ import os
 import re
 import sys
 import time
+import webbrowser
 import ctypes
 from ctypes import wintypes
 from datetime import datetime, timezone, timedelta
@@ -833,7 +834,7 @@ class CodeInputApp:
         # --- 2段目: 取得・追加・管理 ---
         row2 = ttk.Frame(toolbar_container)
         row2.pack(fill=tk.X)
-        ttk.Button(row2, text="🌐 yar.gg から取得", command=self.fetch_yar_gg_codes).pack(side=tk.LEFT, padx=2)
+        ttk.Button(row2, text="🌐 yar.gg を開く", command=self.open_yar_gg).pack(side=tk.LEFT, padx=2)
         ttk.Button(row2, text="＋ 一括追加", command=self.add_code_dialog).pack(side=tk.LEFT, padx=2)
         ttk.Separator(row2, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=6)
         ttk.Button(row2, text="↻ 再読込", command=lambda: self.reload_codes()).pack(side=tk.LEFT, padx=2)
@@ -1191,110 +1192,31 @@ class CodeInputApp:
                 return i
         return -1
 
-    # ---------- yar.gg からコード取得 ----------
-    def fetch_yar_gg_codes(self):
-        """codes.yar.gg から有効なコードを取得 (バックグラウンド実行)。
-        取得後、既存codes.jsonと照合し、未登録のコードをcodes.json に追加。
+    # ---------- yar.gg をブラウザで開く ----------
+    def open_yar_gg(self):
+        """codes.yar.gg を既定のブラウザで開く。
+
+        注意: 過去はコードを自動取得していたが、サイト側が Vercel の
+        bot 防御 (Vercel Security Checkpoint) を導入したため、非ブラウザ
+        クライアント (urllib 等) では常に HTTP 429 で弾かれる。
+        そのため自動取得を廃止し、ユーザーがブラウザでページを開き、
+        コードをコピーして「＋ 一括追加」ダイアログに貼り付ける方式に変更。
         """
-        import threading
-        from urllib.request import urlopen, Request
-        from urllib.error import URLError
-        import socket
-        import re
-
-        def worker():
-            self._log("🌐 yar.gg からコード取得中...")
-            url = "https://codes.yar.gg"
+        url = "https://codes.yar.gg"
+        try:
+            ok = webbrowser.open(url, new=2, autoraise=True)
+            if ok:
+                self._log("🌐 yar.gg をブラウザで開きました。コードをコピーして「＋ 一括追加」に貼り付けてください。")
+            else:
+                raise OSError("ブラウザの起動に失敗しました")
+        except Exception as exc:
+            # ブラウザ起動失敗時は URL をクリップボードにコピー
             try:
-                req = Request(url, headers={
-                    "User-Agent": "WWM-CodeInput/1.0 (compatible; like Gecko)"
-                })
-                # タイムアウト 10秒
-                with urlopen(req, timeout=10) as resp:
-                    raw = resp.read().decode("utf-8", errors="ignore")
-            except (URLError, socket.timeout, OSError) as exc:
-                self._log(f"⚠ yar.gg 取得失敗: {exc}")
-                return
-            except Exception as exc:
-                self._log(f"⚠ yar.gg 取得エラー: {exc}")
-                return
-
-            # JS 配列 "codeEntries" を抽出
-            idx = raw.find("const codeEntries")
-            if idx == -1:
-                self._log("⚠ yar.gg のレスポンスから codeEntries が見つかりません")
-                return
-            arr_start = raw.find("[", idx)
-            if arr_start == -1:
-                self._log("⚠ codeEntries 配列の開始が見つかりません")
-                return
-            depth = 0
-            arr_end = -1
-            for i in range(arr_start, len(raw)):
-                if raw[i] == "[":
-                    depth += 1
-                elif raw[i] == "]":
-                    depth -= 1
-                    if depth == 0:
-                        arr_end = i
-                        break
-            if arr_end == -1:
-                self._log("⚠ codeEntries 配列の終了が見つかりません")
-                return
-            js_array = raw[arr_start:arr_end + 1]
-            # JSON としてパース (JS の true/false は JSON と互換)
-            import json as _json
-            try:
-                entries = _json.loads(js_array)
-            except Exception as exc:
-                self._log(f"⚠ codeEntries パース失敗: {exc}")
-                return
-
-            # 有効コード (expiredAt なし) のみ
-            active = [e for e in entries if "expiredAt" not in e and e.get("code")]
-            self._log(f"  yar.gg 有効コード: {len(active)}件")
-
-            # 既存と照合
-            existing = {c["code"].upper() for c in self.codes}
-            new_codes = []
-            for e in active:
-                code = e["code"].strip()
-                if code.upper() in existing:
-                    continue
-                added_at = e.get("addedAt", "")[:10] or "2026-07-05"
-                new_codes.append({
-                    "code": code,
-                    "used": False,
-                    "added_at": added_at,
-                    "used_at": None,
-                    "source": "yar.gg (自動取得)"
-                })
-
-            if not new_codes:
-                self._log(f"✅ yar.gg 取得完了 — 新規追加なし (全 {len(active)}件 は登録済)")
-                return
-
-            # GUI スレッドで codes.json に追加
-            def apply():
-                # 重複チェック
-                existing_after = {c["code"].upper() for c in self.codes}
-                added, skipped = 0, 0
-                for nc in new_codes:
-                    if nc["code"].upper() in existing_after:
-                        skipped += 1
-                        continue
-                    self.codes.append(nc)
-                    existing_after.add(nc["code"].upper())
-                    added += 1
-                if added > 0:
-                    save_codes(self.codes)
-                    self._refresh_tree()
-                self._log(f"✅ yar.gg 取得完了: {added}件追加 / {skipped}件スキップ (新規候補 {len(new_codes)}件中)")
-
-            self.root.after(0, apply)
-
-        t = threading.Thread(target=worker, daemon=True)
-        t.start()
+                self.root.clipboard_clear()
+                self.root.clipboard_append(url)
+                self._log(f"⚠ ブラウザ起動失敗 ({exc})。URL をクリップボードにコピーしました: {url}")
+            except Exception:
+                self._log(f"⚠ yar.gg を開けません: {url}（手動でブラウザに貼り付けてください）")
 
     # ---------- 追加 / 削除 ----------
     def add_code_dialog(self):
@@ -1315,6 +1237,13 @@ class CodeInputApp:
             dlg, text="コードを一括追加 (1行に1コード または スペース/カンマ区切り)",
             font=("", 10, "bold"),
         ).pack(anchor=tk.W, padx=12, pady=(12, 4))
+
+        # yar.gg からの取得手順ヒント
+        ttk.Label(
+            dlg, text="※ yar.gg (codes.yar.gg) は bot 防御のため自動取得できません。\n"
+                      "  ブラウザでページを開き、コードをコピーして「📋 クリップボードから」で貼り付けてください。",
+            font=("", 8), foreground="#888", justify=tk.LEFT,
+        ).pack(anchor=tk.W, padx=12, pady=(0, 4))
 
         # テキストエリア
         text_frame = ttk.Frame(dlg)
