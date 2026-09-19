@@ -5,6 +5,7 @@ exeを起動 → アプリを「最小化」状態にして非アクティブ化
 import ctypes
 import ctypes.wintypes as wt
 import subprocess
+import sys
 import time
 import tempfile
 import shutil
@@ -21,13 +22,39 @@ VK_CONTROL = 0x11
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
 
+# argtypes/restype 宣言 (x64でポインタ切り詰め・access violationを防ぐ)
+CF_UNICODETEXT = 13
+GMEM_MOVEABLE = 0x0002
+user32.OpenClipboard.argtypes = [wt.HWND]
+user32.OpenClipboard.restype = wt.BOOL
+user32.CloseClipboard.argtypes = []
+user32.CloseClipboard.restype = wt.BOOL
+user32.IsClipboardFormatAvailable.argtypes = [wt.UINT]
+user32.IsClipboardFormatAvailable.restype = wt.BOOL
+user32.GetClipboardData.argtypes = [wt.UINT]
+user32.GetClipboardData.restype = wt.HANDLE
+user32.SetClipboardData.argtypes = [wt.UINT, wt.HANDLE]
+user32.SetClipboardData.restype = wt.HANDLE
+kernel32.GlobalAlloc.argtypes = [wt.UINT, ctypes.c_size_t]
+kernel32.GlobalAlloc.restype = wt.HGLOBAL
+kernel32.GlobalLock.argtypes = [wt.HGLOBAL]
+kernel32.GlobalLock.restype = ctypes.c_void_p
+kernel32.GlobalUnlock.argtypes = [wt.HGLOBAL]
+kernel32.GlobalUnlock.restype = wt.BOOL
+kernel32.GlobalFree.argtypes = [wt.HGLOBAL]
+kernel32.GlobalFree.restype = wt.HGLOBAL
+user32.SendInput.argtypes = [wt.UINT, ctypes.c_void_p, ctypes.c_int]
+user32.SendInput.restype = wt.UINT
+user32.MapVirtualKeyW.argtypes = [wt.UINT, wt.UINT]
+user32.MapVirtualKeyW.restype = wt.UINT
+
 class KEYBDINPUT(ctypes.Structure):
     _fields_ = [
         ("wVk", wt.WORD),
         ("wScan", wt.WORD),
         ("dwFlags", wt.DWORD),
         ("time", wt.DWORD),
-        ("dwExtraInfo", ctypes.POINTER(wt.ULONG)),
+        ("dwExtraInfo", ctypes.c_size_t),
     ]
 
 class INPUT(ctypes.Structure):
@@ -41,15 +68,15 @@ def send_hotkey(mod_key, vk_key):
     # 修飾子ダウン
     for mod, vk in mod_key:
         scan = user32.MapVirtualKeyW(vk, MAPVK_VK_TO_VSC)
-        inputs.append(INPUT(type=INPUT_KEYBOARD, ki=KEYBDINPUT(wVk=vk, wScan=scan, dwFlags=0, time=0, dwExtraInfo=None)))
+        inputs.append(INPUT(type=INPUT_KEYBOARD, ki=KEYBDINPUT(wVk=vk, wScan=scan, dwFlags=0, time=0, dwExtraInfo=0)))
     # キーダウン
-    inputs.append(INPUT(type=INPUT_KEYBOARD, ki=KEYBDINPUT(wVk=vk_key, wScan=scan_key, dwFlags=0, time=0, dwExtraInfo=None)))
+    inputs.append(INPUT(type=INPUT_KEYBOARD, ki=KEYBDINPUT(wVk=vk_key, wScan=scan_key, dwFlags=0, time=0, dwExtraInfo=0)))
     # キーキーアップ
-    inputs.append(INPUT(type=INPUT_KEYBOARD, ki=KEYBDINPUT(wVk=vk_key, wScan=scan_key, dwFlags=KEYEVENTF_KEYUP, time=0, dwExtraInfo=None)))
+    inputs.append(INPUT(type=INPUT_KEYBOARD, ki=KEYBDINPUT(wVk=vk_key, wScan=scan_key, dwFlags=KEYEVENTF_KEYUP, time=0, dwExtraInfo=0)))
     # 修飾子アップ
     for mod, vk in reversed(mod_key):
         scan = user32.MapVirtualKeyW(vk, MAPVK_VK_TO_VSC)
-        inputs.append(INPUT(type=INPUT_KEYBOARD, ki=KEYBDINPUT(wVk=vk, wScan=scan, dwFlags=KEYEVENTF_KEYUP, time=0, dwExtraInfo=None)))
+        inputs.append(INPUT(type=INPUT_KEYBOARD, ki=KEYBDINPUT(wVk=vk, wScan=scan, dwFlags=KEYEVENTF_KEYUP, time=0, dwExtraInfo=0)))
     inp = INPUT * len(inputs)
     i = inp(*inputs)
     sent = user32.SendInput(len(inputs), ctypes.byref(i), ctypes.sizeof(INPUT))
@@ -102,18 +129,47 @@ def set_clipboard(text):
 
 # ===== テスト実行 =====
 print("=" * 60)
-print("グローバルホットキー (Ctrl+G) 動作テスト")
+print("グローバルホットキー (Alt+G) 動作テスト")
 print("=" * 60)
+
+# 冒頭: Temp残骸 app.exe を掃除 (PyInstaller onefile の子プロセス残留対策)
+try:
+    import psutil
+    for p in psutil.process_iter(["name", "exe"]):
+        try:
+            if p.info["name"] == "app.exe" and "Temp" in str(p.info.get("exe") or ""):
+                p.kill()
+        except Exception:
+            pass
+    time.sleep(1.0)
+except ImportError:
+    pass
 
 tmpdir = tempfile.mkdtemp(prefix='wwm_ghk_')
 exe = Path('dist/WWMCodeInput.exe').resolve()
 shutil.copy2(exe, Path(tmpdir) / 'app.exe')
 
+# temp codes.json + settings.json を seed (空だと対象ゼロの false FAIL になる)
+import json as _json
+_seed = [
+    {"code": f"GHKTEST00{i}", "used": False, "added_at": "2026-09-20",
+     "used_at": None, "source": "test"}
+    for i in range(1, 4)
+]
+(Path(tmpdir) / "codes.json").write_text(
+    _json.dumps({"version": 1, "total": 3, "used": 0, "remaining": 3,
+                 "codes": _seed}, ensure_ascii=False, indent=2),
+    encoding="utf-8")
+(Path(tmpdir) / "settings.json").write_text(
+    _json.dumps({"version": 1, "hotkey_next": "Alt+G",
+                 "auto_paste_enabled": False}, ensure_ascii=False),
+    encoding="utf-8")
+
 # 1) exe 起動
 print("\n[1] exe 起動...")
 proc = subprocess.Popen([str(Path(tmpdir) / 'app.exe')])
 print(f"    PID: {proc.pid}")
-time.sleep(3)  # 初期化待ち
+time.sleep(6)  # 初期化待ち (pynput登録+JSON読込に余裕)
 
 if proc.poll() is not None:
     print(f"[NG] exe 起動失敗 exit code={proc.returncode}")
@@ -175,28 +231,39 @@ else:
     print(f"\n[NG] クリップボード変化なし (Alt+G グローバルホットキーが効いていない可能性)")
     result = "FAIL"
 
-# 7) もう一度 Ctrl+G を送って次のコードに進むか確認
-print("\n[5] もう一度 Ctrl+G を送出")
+# 5) もう一度 Alt+G を送って次のコードに進むか確認 (現行仕様: Alt+G連打で次へ)
+print("\n[5] もう一度 Alt+G を送出 (2件目が来るはず)")
 _t.sleep(0.5)
-set_clipboard("INITIAL2")
 _t.sleep(0.3)
-send_ctrl_g()
-_t.sleep(0.5)
+send_alt_g()
+_t.sleep(1.5)
 cb2 = get_clipboard()
 print(f"    クリップボード: {cb2!r}")
-if cb2 != "INITIAL2" and cb2:
+if cb2 and cb2 != cb_after and cb2.startswith("GHKTEST"):
     print(f"[OK] 2回目も成功: {cb2!r}")
 else:
-    print(f"[NG] 2回目失敗")
+    print(f"[NG] 2回目失敗 (期待: {cb_after!r} とは別のGHKTEST*)")
+    result = "FAIL"
 
-# 後処理
+# 後処理 (PyInstaller onefile 子プロセス残骸も掃除)
 proc.terminate()
 _t.sleep(1)
 if proc.poll() is None:
     proc.kill()
+try:
+    import psutil as _ps
+    for p in _ps.process_iter(["name", "exe"]):
+        try:
+            if p.info["name"] == "app.exe" and str(tmpdir) in str(p.info.get("exe") or ""):
+                p.kill()
+        except Exception:
+            pass
+except ImportError:
+    pass
 shutil.rmtree(tmpdir, ignore_errors=True)
 
 print()
 print("=" * 60)
 print(f"結果: {result}")
 print("=" * 60)
+sys.exit(0 if result == "PASS" else 1)

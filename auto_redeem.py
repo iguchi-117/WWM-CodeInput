@@ -228,6 +228,27 @@ def focus_window(handle: int) -> bool:
         return False
 
 
+def focus_check(handle: int) -> dict:
+    """focus_window の突き合わせ診断 (G4ペースト未達の切り分け①)。
+
+    戻り値: {"focused": bool, "fg": int, "title": str, "admin": bool}
+    """
+    try:
+        import win32gui
+        fg = int(win32gui.GetForegroundWindow())
+        try:
+            title = (win32gui.GetWindowText(fg) or "")[:120]
+        except Exception:
+            title = ""
+    except Exception:
+        fg, title = 0, ""
+    try:
+        focused = (fg == int(handle))
+    except Exception:
+        focused = False
+    return {"focused": focused, "fg": fg, "title": title, "admin": is_admin()}
+
+
 def set_clipboard(text: str) -> bool:
     import win32clipboard
 
@@ -244,40 +265,184 @@ def set_clipboard(text: str) -> bool:
 
 
 def send_ctrl_v(delay_ms: int = 150) -> bool:
-    """フォーカス中ウィンドウへ Ctrl+V を送る (SendInput相当: keybd_event)。"""
-    import win32api
-    import win32con
+    """フォーカス中ウィンドウへ Ctrl+V を SendInput で一括送出する。
 
+    旧 keybd_event 分割送出から SendInput 一括送出へ統一 (G4ペースト未達の切り分け)。
+    copy系のクリップボード経路と横並びで確認済み。戻り値: 4件送出で True。
+    """
     try:
-        VK_C = 0x56
-        win32api.keybd_event(win32con.VK_CONTROL, 0, 0, 0)
-        time.sleep(0.03)
-        win32api.keybd_event(VK_C, 0, 0, 0)
-        time.sleep(0.02)
-        win32api.keybd_event(VK_C, 0, win32con.KEYEVENTF_KEYUP, 0)
-        time.sleep(0.02)
-        win32api.keybd_event(win32con.VK_CONTROL, 0, win32con.KEYEVENTF_KEYUP, 0)
+        n = _vk_seq([(VK_CONTROL, 0), (VK_KEY_C, 0),
+                     (VK_KEY_C, KEYEVENTF_KEYUP), (VK_CONTROL, KEYEVENTF_KEYUP)])
         time.sleep(delay_ms / 1000.0)
-        return True
+        return n == 4
     except Exception:
         return False
 
 
 VK_SPACE = 0x20
 VK_ESCAPE = 0x1B
+VK_CONTROL = 0x11
+VK_KEY_C = 0x56
+KEYEVENTF_KEYUP = 0x0002
 RATE_WAIT_CAP_SEC = 60.0
 
 
-def send_key(vk: int, delay_ms: int = 100) -> bool:
-    """単一キー押下を送出する (Space確定/Esc戻り用。send_ctrl_v と同型: keybd_event)。"""
-    import win32api
-    import win32con
+def _vk_seq(seq: list) -> int:
+    """(vk, flags) 列を SendInput で一括送出する。戻り値=実際に送出された件数。
 
+    flags: 0=押下, KEYEVENTF_KEYUP=解放。scan は MapVirtualKeyW で解決。
+    copy系と同一のドライバ到達層 (SendInput) に寄せるための共通関数。
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+
+    class KEYBDINPUT(ctypes.Structure):
+        _fields_ = [("wVk", wintypes.WORD), ("wScan", wintypes.WORD),
+                    ("dwFlags", wintypes.DWORD), ("time", wintypes.DWORD),
+                    ("dwExtraInfo", ctypes.c_size_t)]
+
+    class INPUT(ctypes.Structure):
+        _fields_ = [("type", wintypes.DWORD), ("ki", KEYBDINPUT),
+                    ("_pad", ctypes.c_ubyte * 8)]
+
+    items = list(seq)
+    arr = (INPUT * len(items))()
+    for i, (vk, flags) in enumerate(items):
+        scan = user32.MapVirtualKeyW(int(vk), 0)
+        arr[i].type = 1  # INPUT_KEYBOARD
+        arr[i].ki = KEYBDINPUT(wVk=int(vk), wScan=scan, dwFlags=int(flags),
+                               time=0, dwExtraInfo=0)
+    user32.SendInput.argtypes = [wintypes.UINT, ctypes.c_void_p, ctypes.c_int]
+    user32.SendInput.restype = wintypes.UINT
+    return int(user32.SendInput(len(items), ctypes.byref(arr), ctypes.sizeof(INPUT)))
+
+
+def is_admin() -> bool:
+    """管理者権限で実行中か (UIPI/キー送出到達の前提確認用)。"""
     try:
-        win32api.keybd_event(vk, 0, 0, 0)
-        time.sleep(0.03)
-        win32api.keybd_event(vk, 0, win32con.KEYEVENTF_KEYUP, 0)
+        import ctypes
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+def foreground_matches(handle: int, gui=None) -> bool:
+    """指定ハンドルが現在の前景ウィンドウか (focus_window の突き合わせ用)。
+
+    gui 注入可能 (単体テストはスタブ)。例外時は False (fail closed)。
+    """
+    try:
+        g = gui if gui is not None else __import__("win32gui")
+        return int(g.GetForegroundWindow()) == int(handle)
+    except Exception:
+        return False
+
+
+def send_key(vk: int, delay_ms: int = 100) -> bool:
+    """単一キー押下を送出する (Space確定/Esc戻り用。SendInput統一経路)。"""
+    try:
+        n = _vk_seq([(int(vk), 0), (int(vk), KEYEVENTF_KEYUP)])
         time.sleep(delay_ms / 1000.0)
+        return n == 2
+    except Exception:
+        return False
+
+
+VK_TAB = 0x09
+MOUSEEVENTF_LEFTDOWN = 0x0002
+MOUSEEVENTF_LEFTUP = 0x0004
+
+
+def click_at(x: int, y: int) -> bool:
+    """画面座標へマウス移動＋左クリック (入力欄フォーカス用・SendInput統一経路)。"""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+
+        class MOUSEINPUT(ctypes.Structure):
+            _fields_ = [("dx", wintypes.LONG), ("dy", wintypes.LONG),
+                        ("mouseData", wintypes.DWORD), ("dwFlags", wintypes.DWORD),
+                        ("time", wintypes.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
+
+        class _KI(ctypes.Structure):
+            _fields_ = [("wVk", wintypes.WORD), ("wScan", wintypes.WORD),
+                        ("dwFlags", wintypes.DWORD), ("time", wintypes.DWORD),
+                        ("dwExtraInfo", ctypes.c_size_t)]
+
+        class INPUT(ctypes.Structure):
+            # Win32 INPUT(x64) は40バイト: DWORD(4)+pad(4)+union(32)。
+            # 明示の末尾padを付けると48バイトになり SendInput が87で失敗する。
+            class _U(ctypes.Union):
+                _fields_ = [("mi", MOUSEINPUT), ("ki", _KI)]
+            _anonymous_ = ("u",)
+            _fields_ = [("type", wintypes.DWORD), ("u", _U)]
+
+        user32.SetCursorPos.argtypes = [ctypes.c_int, ctypes.c_int]
+        user32.SetCursorPos.restype = wintypes.BOOL
+        user32.SetCursorPos(int(x), int(y))
+        time.sleep(0.1)
+        # UIPI下では SetCursorPos が 0 を返しても実際は移動していることがあるため、
+        # 戻り値ではなくカーソル位置で到達確認する
+        try:
+            pos = user32.GetCursorPos
+            from ctypes import wintypes as _wt
+
+            class _PT(ctypes.Structure):
+                _fields_ = [("x", _wt.LONG), ("y", _wt.LONG)]
+            pt = _PT()
+            pos.argtypes = [ctypes.POINTER(_PT)]
+            pos.restype = wintypes.BOOL
+            if pos(ctypes.byref(pt)) and abs(pt.x - int(x)) <= 2 and abs(pt.y - int(y)) <= 2:
+                pass  # 到達確認OK
+        except Exception:
+            pass
+        arr = (INPUT * 2)()
+        for i, flag in enumerate((MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP)):
+            arr[i].type = 0  # INPUT_MOUSE
+            arr[i].mi = MOUSEINPUT(dx=0, dy=0, mouseData=0, dwFlags=flag,
+                                   time=0, dwExtraInfo=0)
+        user32.SendInput.argtypes = [wintypes.UINT, ctypes.c_void_p, ctypes.c_int]
+        user32.SendInput.restype = wintypes.UINT
+        n = int(user32.SendInput(2, ctypes.byref(arr), ctypes.sizeof(INPUT)))
+        time.sleep(0.2)
+        return n == 2
+    except Exception:
+        return False
+
+
+def press_tab(count: int = 1) -> bool:
+    """Tab を count 回送出する (入力欄フォーカス移動用)。"""
+    try:
+        for _ in range(max(1, int(count))):
+            n = _vk_seq([(VK_TAB, 0), (VK_TAB, KEYEVENTF_KEYUP)])
+            if n != 2:
+                return False
+            time.sleep(0.1)
+        return True
+    except Exception:
+        return False
+
+
+def focus_field(cfg: dict | None) -> bool:
+    """入力欄へフォーカスを当てる (click→tab の順。設定なしなら何もしない)。
+
+    cfg: {"click_xy": [x, y], "tabs": n}。座標はハードコードせず CLI/設定で注入。
+    どちらも未設定なら True (noop・後方互換)。
+    """
+    try:
+        cfg = cfg or {}
+        xy = cfg.get("click_xy")
+        if xy:
+            if not click_at(int(xy[0]), int(xy[1])):
+                return False
+        tabs = int(cfg.get("tabs", 0) or 0)
+        if tabs > 0:
+            if not press_tab(tabs):
+                return False
         return True
     except Exception:
         return False
@@ -486,7 +651,21 @@ def main(argv: list | None = None) -> int:
                     help="結果キャプチャ範囲 (center=中央切抜き比較用)")
     ap.add_argument("--crop-ratio", type=float, default=0.6, help="中央切抜き比率")
     ap.add_argument("--shot-dir", default="", help="ループ中の確定直後PNG保存先 (既定 shots/)")
+    ap.add_argument("--click-xy", default="", help="入力欄クリック座標 'x,y' (未指定ならクリックなし)")
+    ap.add_argument("--tabs", type=int, default=0, help="投入前のTab送出回数 (既定0=なし)")
     args = ap.parse_args(argv)
+
+    def _field_cfg() -> dict:
+        cfg: dict = {}
+        if args.click_xy.strip():
+            try:
+                xs, ys = args.click_xy.replace(" ", "").split(",", 1)
+                cfg["click_xy"] = [int(xs), int(ys)]
+            except ValueError:
+                print(f"click-xy解釈失敗: {args.click_xy!r} (例: --click-xy 960,540)")
+        if int(args.tabs or 0) > 0:
+            cfg["tabs"] = int(args.tabs)
+        return cfg
 
     if args.list_windows:
         for w in list_windows():
@@ -535,6 +714,13 @@ def main(argv: list | None = None) -> int:
             if not focus_window(gw["handle"]):
                 print("focus失敗。中止 (未保存)")
                 return 2
+            # 切り分け①③: 前景突き合わせ＋管理者権限表示
+            fc = focus_check(gw["handle"])
+            print(f"focus: {'OK' if fc['focused'] else 'NG(前景不一致)'} "
+                  f"(fg={fc['fg']} title={fc['title']!r} admin={fc['admin']})")
+            if not fc["focused"]:
+                print("前景がゲームにありません。入力欄へフォーカスして再実行 (未保存)")
+                return 2
         shot_dir = args.shot_dir or str(APP_DIR / "shots")
         seq = {"n": 0}
 
@@ -557,10 +743,37 @@ def main(argv: list | None = None) -> int:
             return text
 
         def _real_input(code: str) -> bool:
+            # 入力欄フォーカス (click→tab。未設定ならnoop・後方互換)
+            fcfg = _field_cfg()
+            if fcfg:
+                ok_f = focus_field(fcfg)
+                print(f"field: {'OK' if ok_f else 'NG'} ({fcfg})")
+                if not ok_f:
+                    print("入力欄フォーカス失敗。中止 (未保存分あり)")
+                    return False
+                # フォーカス直後キャプチャ (届きの証拠・Space確定前)
+                try:
+                    os.makedirs(shot_dir, exist_ok=True)
+                    safe0 = re.sub(r"[^A-Za-z0-9_-]+", "_", code) or "code"
+                    pre0 = os.path.join(shot_dir, f"{datetime.now(JST):%Y%m%d-%H%M%S}_{safe0}_focused.png")
+                    capture_result(gw["handle"], pre0, crop=args.crop, ratio=args.crop_ratio)
+                    print(f"focused_shot: {pre0}")
+                except Exception as exc:
+                    print(f"focused_shot失敗: {exc} (投入は継続)")
             if not set_clipboard(code):
                 print("clipboard失敗。中止 (未保存分あり)")
                 return False
-            send_ctrl_v()
+            ok_v = send_ctrl_v()
+            print(f"ctrl_v: {'OK' if ok_v else 'NG(送出件数不足)'}")
+            # 切り分け②: 貼付直後キャプチャ (Space確定前・入力欄到達の証拠)
+            try:
+                os.makedirs(shot_dir, exist_ok=True)
+                safe = re.sub(r"[^A-Za-z0-9_-]+", "_", code) or "code"
+                pre = os.path.join(shot_dir, f"{datetime.now(JST):%Y%m%d-%H%M%S}_{safe}_pasted.png")
+                capture_result(gw["handle"], pre, crop=args.crop, ratio=args.crop_ratio)
+                print(f"pasted_shot: {pre}")
+            except Exception as exc:
+                print(f"pasted_shot失敗: {exc} (投入は継続)")
             print(f"pasted[{seq['n'] + 1}]: {code} → Space確定")
             return send_key(VK_SPACE)
 
@@ -613,10 +826,17 @@ def main(argv: list | None = None) -> int:
     if not focus_window(gw["handle"]):
         print("focus失敗。中止 (未保存)")
         return 2
+    fc1 = focus_check(gw["handle"])
+    print(f"focus: {'OK' if fc1['focused'] else 'NG(前景不一致)'} "
+          f"(fg={fc1['fg']} title={fc1['title']!r} admin={fc1['admin']})")
+    if not fc1["focused"]:
+        print("前景がゲームにありません。入力欄へフォーカスして再実行 (未保存)")
+        return 2
     if not set_clipboard(code):
         print("clipboard失敗。中止 (未保存)")
         return 2
-    send_ctrl_v()
+    ok_v1 = send_ctrl_v()
+    print(f"ctrl_v: {'OK' if ok_v1 else 'NG(送出件数不足)'}")
     print(f"pasted: {code}")
     print("結果メッセージを確認し、--result-text '...' でJev判定 → マークへ進む (半自動)")
     print("※ 全自動連続投入は頻度制限・運用規約の確認後に有効化する")

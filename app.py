@@ -857,7 +857,7 @@ if sys.platform == "win32":
 else:
     # 非 Windows 環境用スタブ
     def get_clipboard_text() -> str: return ""
-    def set_clipboard_text(text: str) -> bool: return False
+    def set_clipboard_text(text: str, hwnd: int = 0) -> bool: return False
     def register_global_hotkeys(next_mod: int, next_vk: int, used_mod: int = 0, used_vk: int = 0, target_hwnd: int = 0) -> tuple: return (False, False)
     def unregister_global_hotkeys(target_hwnd: int = 0) -> None: pass
     def create_message_only_window() -> int: return 0
@@ -927,6 +927,7 @@ class CodeInputApp:
 
         # グローバルホットキー登録 (pynput ライブラリ使用)
         self._hotkey_hwnd = 0
+        self._hotkey_thread_id = 0
         if not _KEYBOARD_AVAILABLE:
             self._log("⚠ 'pynput' ライブラリが見つかりません。")
             self._log("  pip install pynput を実行してください")
@@ -1258,11 +1259,23 @@ class CodeInputApp:
         code = self.codes[i].get("code", "")
         if not code:
             return
-        if not set_clipboard_text(code):
-            self._log("⚠ クリップボードへのコピーに失敗しました")
-            return
+        # アプリの HWND を取得して clipboard ロックを安定化 (copy_next と同一経路)
+        hwnd = 0
+        try:
+            hwnd = int(self.root.winfo_id())
+        except Exception:
+            pass
+        if not set_clipboard_text(code, hwnd):
+            # ctypes 経路が失敗したら tkinter クリップボードでフォールバック
+            try:
+                self.root.clipboard_clear()
+                self.root.clipboard_append(code)
+            except Exception:
+                self._log("⚠ クリップボードへのコピーに失敗しました")
+                return
         self.last_copied_code = code
-        self._log(f"📋 コピー: {code}  (Ctrl+G で次へ / Alt+Tab 後にこのコードを使用済に)")
+        next_spec = self.settings.get("hotkey_next", "Alt+G")
+        self._log(f"📋 コピー: {code}  ({next_spec} で次へ / Alt+Tab 後にこのコードを使用済に)")
 
     def copy_selected_as_next(self):
         """コンテキストメニュー: 選択行をクリップボードにコピー"""
@@ -1651,7 +1664,6 @@ class CodeInputApp:
         ttk.Label(opts, text="重複コードの扱い:").grid(row=0, column=0, sticky=tk.W, padx=4)
         ttk.Radiobutton(opts, text="スキップ", variable=dup_var, value="skip").grid(row=0, column=1, padx=4)
         ttk.Radiobutton(opts, text="上書き (used フラグをリセット)", variable=dup_var, value="overwrite").grid(row=0, column=2, padx=4)
-        ttk.Radiobutton(opts, text="両方追加しない (常にスキップ)", variable=dup_var, value="skip").grid(row=0, column=3, padx=4)
 
         src_var = tk.StringVar(value="手動追加")
         ttk.Label(opts, text="ソース:").grid(row=1, column=0, sticky=tk.W, padx=4, pady=(4, 0))
@@ -2306,7 +2318,8 @@ class CodeInputApp:
                 # 戻ってきた
                 self._next_after_focus = True
                 if self.last_copied_code and self._is_known(self.last_copied_code):
-                    self._log(f"⏎ アプリにフォーカスが戻りました。Ctrl+G で次へコピーできます (前回: {self.last_copied_code})")
+                    _ns = self.settings.get("hotkey_next", "Alt+G")
+                    self._log(f"⏎ アプリにフォーカスが戻りました。{_ns} で次へコピーできます (前回: {self.last_copied_code})")
             elif not focused and self._next_after_focus:
                 self._next_after_focus = False
         except Exception:

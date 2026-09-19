@@ -144,16 +144,84 @@ finally:
     ar.capture_window = orig_cap
 check("A9 中央切抜き100x50", got == (100, 50), f"{got}")
 
-# A10: send_key は down→up の順で送出 (win32スタブ・実キー送出なし)
+# A10: send_key は down→up の順で SendInput 統一経路に送出 (_vk_seq注入・実送出なし)
 events = []
-sys.modules["win32api"] = type("M", (), {"keybd_event": staticmethod(lambda vk, sc, fl, ex: events.append((vk, fl)))})()
-sys.modules["win32con"] = type("M", (), {"KEYEVENTF_KEYUP": 2})()
+orig_vk10 = ar._vk_seq
+ar._vk_seq = lambda seq: (events.extend(list(seq)), len(list(seq)))[1]
 try:
     ok = ar.send_key(0x20, delay_ms=0)
 finally:
-    del sys.modules["win32api"]
-    del sys.modules["win32con"]
+    ar._vk_seq = orig_vk10
 check("A10 send_key Space down/up", ok is True and events == [(0x20, 0), (0x20, 2)], f"{events}")
+
+# A10b: send_ctrl_v は SendInput 統一経路 (vk_seq 注入・実キー送出なし)
+seqs = []
+orig_vk = ar._vk_seq
+ar._vk_seq = lambda seq: (seqs.append(list(seq)), len(seq))[1]
+try:
+    ok2 = ar.send_ctrl_v(delay_ms=0)
+finally:
+    ar._vk_seq = orig_vk
+check("A10b send_ctrl_vはCtrl down→V down/up→Ctrl up", ok2 is True and seqs and seqs[0] == [(0x11, 0), (0x56, 0), (0x56, 2), (0x11, 2)], f"{seqs}")
+
+# A10c: focus確認ヘルパ (スタブ注入・実ウィンドウ不要)
+class _FakeGui:
+    def __init__(self, fg, title="Where Winds Meet"):
+        self._fg = fg
+        self._title = title
+    def GetForegroundWindow(self): return self._fg
+    def GetWindowText(self, h): return self._title if h == self._fg else "other"
+    def ShowWindow(self, h, c): return True
+    def SetForegroundWindow(self, h): return True
+check("A10c foreground_matches正常", ar.foreground_matches(777, _FakeGui(777)) is True)
+check("A10c foreground_matches不一致", ar.foreground_matches(888, _FakeGui(777)) is False)
+check("A10c foreground_matches例外時False", ar.foreground_matches(777, None) is False)
+
+# A10d: focus_check は診断dictを返す (win32gui注入・実ウィンドウ不要)
+import types as _types
+_fg_mod = _types.ModuleType("wwm_fake_gui")
+_fg_mod.GetForegroundWindow = lambda: 777
+_fg_mod.GetWindowText = lambda h: "Where Winds Meet"
+_fg_mod.ShowWindow = lambda h, c: True
+_fg_mod.SetForegroundWindow = lambda h: True
+_orig_gui = sys.modules.get("win32gui")
+sys.modules["win32gui"] = _fg_mod
+try:
+    fc = ar.focus_check(777)
+finally:
+    if _orig_gui is not None:
+        sys.modules["win32gui"] = _orig_gui
+    else:
+        del sys.modules["win32gui"]
+check("A10d focus_check診断dict", fc["focused"] is True and fc["fg"] == 777 and isinstance(fc["admin"], bool), f"{fc}")
+
+# A10e: click_at/press_tab (注入・実送出なし)
+clicks = []
+tabs = []
+orig_click = ar.click_at
+orig_tab = ar.press_tab
+ar.click_at = lambda x, y: (clicks.append((x, y)), True)[1]
+ar.press_tab = lambda n=1: (tabs.append(n), True)[1]
+try:
+    ok_c = ar.click_at(960, 540)
+    ok_t = ar.press_tab(2)
+finally:
+    ar.click_at = orig_click
+    ar.press_tab = orig_tab
+check("A10e click_at/press_tab注入", ok_c and ok_t and clicks == [(960, 540)] and tabs == [2], f"{clicks} {tabs}")
+
+# A10f: focus_field は click→tab の順で適用し、設定なしなら何もしない
+calls = []
+ar.click_at = lambda x, y: (calls.append(("click", x, y)), True)[1]
+ar.press_tab = lambda n=1: (calls.append(("tab", n)), True)[1]
+try:
+    r1 = ar.focus_field({"click_xy": [100, 200], "tabs": 1})
+    r2 = ar.focus_field({})
+finally:
+    ar.click_at = orig_click
+    ar.press_tab = orig_tab
+check("A10f focus_field設定ありはclick→tab", r1 is True and calls == [("click", 100, 200), ("tab", 1)], f"{calls} {r1}")
+check("A10f focus_field設定なしはnoop", r2 is True)
 
 # A11: app.py側 jev_decide_action との一致 (重複片寄せの振る舞い同一)
 src_app = (Path(__file__).parent / "app.py").read_text(encoding="utf-8")

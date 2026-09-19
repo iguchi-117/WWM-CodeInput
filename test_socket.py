@@ -148,6 +148,18 @@ def main():
     print()
 
     # テスト用一時環境
+    # 冒頭: Temp残骸 app.exe を掃除 (PyInstaller onefile の子プロセス残留対策)
+    try:
+        import psutil as _ps0
+        for p in _ps0.process_iter(["name", "exe"]):
+            try:
+                if p.info["name"] == "app.exe" and "Temp" in str(p.info.get("exe") or ""):
+                    p.kill()
+            except Exception:
+                pass
+        time.sleep(1.0)
+    except ImportError:
+        pass
     tmpdir = Path(tempfile.mkdtemp(prefix="wwm_int_"))
     exe = Path("dist/WWMCodeInput.exe").resolve()
     # 毎回違うポートを使って、古いexeゾンビとの衝突を避ける
