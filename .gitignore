@@ -39,3 +39,6 @@ _dbg_err.txt
 # OS
 Thumbs.db
 .DS_Store
+
+# G4実測の確定直後キャプチャ (shots/ は証跡化後に .hermes/evidence/g4_fail/ へ移動)
+shots/
