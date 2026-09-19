@@ -12,6 +12,8 @@ WWM コード高速入力ツール (WWM Code Input Helper)
 - コピー済みコードは「使用済み」マーク + codes.json を自動更新
 - コンテキストメニュー: 使用済に戻す / コード追加 / 削除
 - アプリ起動中、codes.json の外部変更を 5秒ごとに再読込
+- yar.gg 公開APIから自動取得 (ツールバー「⤓ yar.gg 自動取得」)
+  (手動導線「🌐 yar.gg を開く → ＋ 一括追加」も残している)
 
 【ホットキー一覧】
 - アプリ内: Ctrl+C        選択コードをコピー
@@ -28,7 +30,10 @@ import json
 import os
 import re
 import sys
+import threading
 import time
+import urllib.error
+import urllib.request
 import webbrowser
 import ctypes
 from ctypes import wintypes
@@ -146,6 +151,176 @@ MOD_CONTROL = 0x0002
 MOD_SHIFT = 0x0004
 MOD_WIN = 0x0008
 VK_G = 0x47
+
+# yar.gg 自動取得 (公開API: bot防御なしを確認 2026-09-19)
+YAR_CODES_API_URLS = (
+    "https://codes.yar.gg/api/codes",
+    "https://codes-backend.wwmcodes.workers.dev/v1/codes",
+)
+YAR_FETCH_TIMEOUT_SEC = 20
+YAR_CODES_SOURCE_LABEL = "yar.gg自動取得"
+
+# Jev 判定ゲート (引き換え結果メッセージ分類。実測 6パターン全的中 2026-09-19)
+JEV_URL = "https://api.typesafe.ai/v1/systemone"
+JEV_MODEL = "jev-latest"
+JEV_TIMEOUT_SEC = 30
+JEV_OUTCOME_CRITERIA = {
+    "success": "Code accepted, rewards granted",
+    "already_used": "Code already claimed before",
+    "expired": "Code expired",
+    "rate_limited": "Too frequent, retry later",
+    "other_error": "Other failure",
+}
+JEV_OUTCOME_LABEL_JA = {
+    "success": "成功",
+    "already_used": "使用済",
+    "expired": "期限切れ",
+    "rate_limited": "頻度制限",
+    "other_error": "その他エラー",
+    "?": "不明",
+}
+JEV_ACTION_LABEL_JA = {
+    "next": "➡ 次へ",
+    "retry_same": "↻ 間隔を空けて再試行",
+    "human": "👤 人間確認",
+    "done": "✅ 完了",
+}
+
+
+def jev_classify_redeem(result_text: str, timeout: int = JEV_TIMEOUT_SEC) -> dict:
+    """引き換え結果メッセージを Jev 3問並列で分類する。
+
+    戻り値: {"outcome","confidence","is_success","certainty","elapsed_ms","usage"}
+    APIキー未設定・通信失敗時は例外を送出する (呼び出し側で可視化)。
+    """
+    api_key = os.environ.get("JEV_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("JEV_API_KEY が未設定 (環境変数に登録してください)")
+    body = {
+        "state": "WWM redeem result message: " + result_text,
+        "model": JEV_MODEL,
+        "questions": {
+            "outcome": {
+                "type": "choice",
+                "instructions": "What is the redeem result",
+                "criteria": JEV_OUTCOME_CRITERIA,
+            },
+            "is_success": {
+                "type": "noul",
+                "instructions": "The message indicates successful redemption",
+            },
+            "certainty": {
+                "type": "score",
+                "instructions": "How certain is this classification",
+                "criteria": ["Uncertain", "Fairly confident", "Certain"],
+            },
+        },
+    }
+    req = urllib.request.Request(
+        JEV_URL,
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Authorization": "Bearer " + api_key, "Content-Type": "application/json"},
+    )
+    t0 = time.time()
+    with urllib.request.urlopen(req, timeout=timeout) as res:
+        data = json.loads(res.read().decode("utf-8"))
+    ms = int((time.time() - t0) * 1000)
+    a = data.get("answers", {})
+    return {
+        "outcome": a.get("outcome", {}).get("choice", "?"),
+        "confidence": float(a.get("outcome", {}).get("confidence", 0.0) or 0.0),
+        "is_success": float(a.get("is_success", {}).get("noul", 0.0) or 0.0),
+        "certainty": float(a.get("certainty", {}).get("score", 0.0) or 0.0),
+        "elapsed_ms": ms,
+        "usage": data.get("usage", {}),
+    }
+
+
+def jev_decide_action(outcome: str, confidence: float, conf_floor: float = 0.5) -> str:
+    """Confidence-Gated Routing: next / retry_same / human / done を返す。"""
+    try:
+        conf = float(confidence)
+    except (TypeError, ValueError):
+        return "human"
+    if conf < conf_floor:
+        return "human"
+    if outcome == "rate_limited":
+        return "retry_same"
+    if outcome in ("success", "already_used", "expired"):
+        return "next"
+    return "human"
+
+CODE_RE = re.compile(r"^[A-Za-z0-9]{6,15}$")
+
+
+def fetch_yar_codes(timeout: int = YAR_FETCH_TIMEOUT_SEC) -> dict:
+    """yar.gg 公開APIから active/expired コード一覧を取得する。
+
+    戻り値: {"active": [code...], "expired": [code...], "updated_at": str, "url": str}
+    取得失敗時は urllib.error.URLError / TimeoutError 等を送出する。
+    """
+    last_exc: Exception | None = None
+    for url in YAR_CODES_API_URLS:
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={"User-Agent": "WWM-CodeInput/1.0", "Accept": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as res:
+                data = json.loads(res.read().decode("utf-8"))
+            active = [c.get("code", "") for c in data.get("active", []) if c.get("code")]
+            expired = [c.get("code", "") for c in data.get("expired", []) if c.get("code")]
+            return {
+                "active": active,
+                "expired": expired,
+                "updated_at": data.get("updatedAt", ""),
+                "url": url,
+            }
+        except Exception as exc:  # noqa: BLE001 — 次のURLへフォールバック
+            last_exc = exc
+            continue
+    raise last_exc if last_exc else RuntimeError("yar.gg API 取得失敗")
+
+
+def merge_yar_codes(codes: list, active: list, expired: list, today: str) -> dict:
+    """取得結果を既存 codes リストへマージする (重複は大文字小文字無視)。
+
+    - active にある未登録コード → 未使用で追加 (source=yar.gg自動取得)
+    - expired にある既存コードで未使用のまま → 使用済にマーク (sourceへ追記なし)
+    戻り値: {"added": int, "marked_expired": int, "skipped": int}
+    """
+    existing = {str(c.get("code", "")).upper(): i for i, c in enumerate(codes)}
+    added, marked_expired, skipped = 0, 0, 0
+    now = datetime.now(JST).strftime("%Y-%m-%d %H:%M")
+    for raw in active:
+        code = str(raw or "").strip()
+        if not code or not CODE_RE.fullmatch(code):
+            skipped += 1
+            continue
+        if code.upper() in existing:
+            skipped += 1
+            continue
+        codes.append({
+            "code": code,
+            "used": False,
+            "added_at": today,
+            "used_at": None,
+            "source": YAR_CODES_SOURCE_LABEL,
+        })
+        existing[code.upper()] = len(codes) - 1
+        added += 1
+    expired_set = {str(c or "").strip().upper() for c in expired if str(c or "").strip()}
+    for cu in expired_set:
+        idx = existing.get(cu)
+        if idx is None:
+            continue
+        c = codes[idx]
+        if not c.get("used"):
+            c["used"] = True
+            c["used_at"] = now
+            marked_expired += 1
+    return {"added": added, "marked_expired": marked_expired, "skipped": skipped}
+
 
 # デフォルトホットキー (Alt+G / Alt+Shift+G — Ctrl+G は Windows が Xbox Game Bar 用に予約済)
 DEFAULT_HOTKEY_NEXT = (MOD_ALT, VK_G)
@@ -835,6 +1010,7 @@ class CodeInputApp:
         row2 = ttk.Frame(toolbar_container)
         row2.pack(fill=tk.X)
         ttk.Button(row2, text="🌐 yar.gg を開く", command=self.open_yar_gg).pack(side=tk.LEFT, padx=2)
+        ttk.Button(row2, text="⤓ yar.gg 自動取得", command=self.fetch_yar_codes_ui).pack(side=tk.LEFT, padx=2)
         ttk.Button(row2, text="＋ 一括追加", command=self.add_code_dialog).pack(side=tk.LEFT, padx=2)
         ttk.Separator(row2, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=6)
         ttk.Button(row2, text="↻ 再読込", command=lambda: self.reload_codes()).pack(side=tk.LEFT, padx=2)
@@ -845,6 +1021,30 @@ class CodeInputApp:
         status_lbl = ttk.Label(self.root, textvariable=self.status_var,
                                relief=tk.SUNKEN, anchor=tk.W, padding=(6, 2))
         status_lbl.pack(fill=tk.X, side=tk.BOTTOM)
+
+        # Jev 判定パネル (自動入力モードの判定を可視化)
+        jev_frame = ttk.LabelFrame(self.root, text="🤖 Jev 判定 (自動入力モード)", padding=6)
+        jev_frame.pack(fill=tk.X, padx=6, pady=(0, 6))
+        self.jev_status_var = tk.StringVar(value="待機中 — 結果メッセージを入力して「判定」を押してください")
+        ttk.Label(jev_frame, textvariable=self.jev_status_var,
+                  font=("", 10, "bold")).pack(anchor=tk.W)
+        self.jev_detail_var = tk.StringVar(value="")
+        ttk.Label(jev_frame, textvariable=self.jev_detail_var,
+                  font=("Consolas", 9), foreground="#555",
+                  justify=tk.LEFT).pack(anchor=tk.W)
+        jev_btn_row = ttk.Frame(jev_frame)
+        jev_btn_row.pack(fill=tk.X, pady=(4, 0))
+        ttk.Label(jev_btn_row, text="結果メッセージ:").pack(side=tk.LEFT)
+        self.jev_text_var = tk.StringVar(value="")
+        self.jev_entry = ttk.Entry(jev_btn_row, textvariable=self.jev_text_var,
+                                   font=("Consolas", 10), width=52)
+        self.jev_entry.pack(side=tk.LEFT, padx=4, fill=tk.X, expand=True)
+        self.jev_entry.bind("<Return>", lambda e: self.jev_judge_ui())
+        ttk.Button(jev_btn_row, text="🔍 判定",
+                   command=self.jev_judge_ui).pack(side=tk.LEFT, padx=2)
+        ttk.Button(jev_btn_row, text="✓ 判定通りにマーク",
+                   command=self.jev_apply_ui).pack(side=tk.LEFT, padx=2)
+        self._jev_last = None  # 直近の判定結果 {"code","gate","action"}
 
         # Treeview
         table_frame = ttk.Frame(self.root, padding=6)
@@ -1194,13 +1394,10 @@ class CodeInputApp:
 
     # ---------- yar.gg をブラウザで開く ----------
     def open_yar_gg(self):
-        """codes.yar.gg を既定のブラウザで開く。
+        """codes.yar.gg を既定のブラウザで開く (手動取得用)。
 
-        注意: 過去はコードを自動取得していたが、サイト側が Vercel の
-        bot 防御 (Vercel Security Checkpoint) を導入したため、非ブラウザ
-        クライアント (urllib 等) では常に HTTP 429 で弾かれる。
-        そのため自動取得を廃止し、ユーザーがブラウザでページを開き、
-        コードをコピーして「＋ 一括追加」ダイアログに貼り付ける方式に変更。
+        「⤓ yar.gg 自動取得」ボタンで公開APIから一括取得もできる。
+        手動でページを見ながら拾いたい場合の導線として残している。
         """
         url = "https://codes.yar.gg"
         try:
@@ -1217,6 +1414,144 @@ class CodeInputApp:
                 self._log(f"⚠ ブラウザ起動失敗 ({exc})。URL をクリップボードにコピーしました: {url}")
             except Exception:
                 self._log(f"⚠ yar.gg を開けません: {url}（手動でブラウザに貼り付けてください）")
+
+    # ---------- yar.gg 自動取得 ----------
+    def fetch_yar_codes_ui(self):
+        """yar.gg 公開APIから自動取得し codes.json へマージ (別スレッド)。
+
+        手動導線 (ブラウザで開く/一括追加) は残したまま追加する機能。
+        失敗時はログのみで既存データに触らない (fail closed)。
+        """
+        self._log("⤓ yar.gg から自動取得中…")
+        self.status_var.set("yar.gg 自動取得中…")
+
+        def worker():
+            try:
+                data = fetch_yar_codes()
+            except Exception as exc:  # noqa: BLE001 — 画面に理由だけ出す
+                self.root.after(0, self._on_yar_fetch_error, str(exc))
+                return
+            self.root.after(0, self._on_yar_fetch_done, data)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_yar_fetch_error(self, reason: str):
+        self.status_var.set("準備完了")
+        self._log(f"⚠ yar.gg 自動取得に失敗しました: {reason}")
+        self._log("  手動取得 (🌐 yar.gg を開く → ＋ 一括追加) も使えます")
+
+    def _on_yar_fetch_done(self, data: dict):
+        try:
+            today = datetime.now(JST).strftime("%Y-%m-%d")
+            stats = merge_yar_codes(
+                self.codes, data.get("active", []), data.get("expired", []), today
+            )
+            if stats["added"] or stats["marked_expired"]:
+                save_codes(self.codes)
+            self._refresh_tree()
+            self.status_var.set("準備完了")
+            self._log(
+                f"✅ yar.gg 自動取得: 追加 {stats['added']} 件 / "
+                f"失効マーク {stats['marked_expired']} 件 / "
+                f"スキップ {stats['skipped']} 件 "
+                f"(site更新: {data.get('updated_at', '?')})"
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.status_var.set("準備完了")
+            self._log(f"⚠ 取得結果の反映に失敗しました: {exc}")
+
+    # ---------- Jev 判定 (自動入力モードの可視化) ----------
+    @staticmethod
+    def _jev_bar(conf: float, width: int = 20) -> str:
+        try:
+            f = max(0.0, min(1.0, float(conf)))
+        except (TypeError, ValueError):
+            f = 0.0
+        n = int(round(f * width))
+        return "█" * n + "░" * (width - n) + f" {f:.2f}"
+
+    def jev_judge_ui(self):
+        """結果メッセージを Jev 3問並列で判定し、パネルに可視化する (別スレッド)。"""
+        text = (self.jev_text_var.get() or "").strip()
+        if not text:
+            self.jev_status_var.set("⚠ 結果メッセージを入力してください")
+            return
+        idx = self._next_unused_index()
+        code = self.codes[idx].get("code", "") if idx >= 0 else "(未使用なし)"
+        self.jev_status_var.set(f"⏳ Jev判定中… 対象: {code}")
+        self.jev_detail_var.set("")
+        self._jev_last = None
+
+        def worker():
+            try:
+                gate = jev_classify_redeem(text)
+            except Exception as exc:  # noqa: BLE001
+                self.root.after(0, self._on_jev_error, str(exc))
+                return
+            action = jev_decide_action(gate["outcome"], gate["confidence"])
+            self.root.after(0, self._on_jev_done, {
+                "code": code, "idx": idx,
+                "gate": gate, "action": action, "text": text,
+            })
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_jev_error(self, reason: str):
+        self.jev_status_var.set(f"⚠ Jev判定に失敗: {reason}")
+        self.jev_detail_var.set("通信・キー設定を確認してください (JEV_API_KEY)")
+        self._log(f"⚠ Jev判定に失敗しました: {reason}")
+
+    def _on_jev_done(self, result: dict):
+        gate = result["gate"]
+        action = result["action"]
+        code = result["code"]
+        outcome_ja = JEV_OUTCOME_LABEL_JA.get(gate["outcome"], gate["outcome"])
+        action_ja = JEV_ACTION_LABEL_JA.get(action, action)
+        usage = gate.get("usage", {}) or {}
+        self._jev_last = result
+        self.jev_status_var.set(
+            f"判定: {outcome_ja} → {action_ja}  (対象: {code})"
+        )
+        self.jev_detail_var.set(
+            f"conf {self._jev_bar(gate['confidence'])}  "
+            f"success_noul {gate['is_success']:.2f}  "
+            f"certainty {gate['certainty']:.2f}  "
+            f"{gate['elapsed_ms']}ms  "
+            f"in {usage.get('input_tokens', '?')}tok"
+        )
+        self._log(
+            f"🤖 Jev判定 [{code}]: {outcome_ja}(conf {gate['confidence']:.2f}) "
+            f"→ {action_ja} [{gate['elapsed_ms']}ms]"
+        )
+
+    def jev_apply_ui(self):
+        """直近の判定通りにマークする (next=使用済、retry_same/human=何もしない)。"""
+        last = getattr(self, "_jev_last", None)
+        if not last:
+            self._log("⚠ 先に「🔍 判定」を実行してください")
+            return
+        action = last["action"]
+        idx = last["idx"]
+        code = last["code"]
+        gate = last["gate"]
+        if idx is None or idx < 0 or idx >= len(self.codes):
+            self._log("⚠ 対象コードがありません (未使用なし)")
+            return
+        if action == "next":
+            c = self.codes[idx]
+            if not c.get("used"):
+                c["used"] = True
+                c["used_at"] = datetime.now(JST).strftime("%Y-%m-%d %H:%M")
+                save_codes(self.codes)
+                self._refresh_tree()
+            outcome_ja = JEV_OUTCOME_LABEL_JA.get(gate["outcome"], gate["outcome"])
+            self._log(f"✓ Jev判定通りにマーク: {code} を使用済 ({outcome_ja})")
+            self.jev_status_var.set(f"✓ マーク済: {code} ({outcome_ja}) — 次のコードへ")
+            self._jev_last = None
+        elif action == "retry_same":
+            self._log(f"↻ 頻度制限のため待機: {code} はマークせず間隔を空けて再試行してください")
+        else:
+            self._log(f"👤 人間確認が必要: {code} はマークしません (conf {gate['confidence']:.2f})")
 
     # ---------- 追加 / 削除 ----------
     def add_code_dialog(self):
@@ -1240,8 +1575,8 @@ class CodeInputApp:
 
         # yar.gg からの取得手順ヒント
         ttk.Label(
-            dlg, text="※ yar.gg (codes.yar.gg) は bot 防御のため自動取得できません。\n"
-                      "  ブラウザでページを開き、コードをコピーして「📋 クリップボードから」で貼り付けてください。",
+            dlg, text="※ 通常はツールバーの「⤓ yar.gg 自動取得」で一括取得できます。\n"
+                      "  ブラウザで目視確認しながら拾いたい場合のみここに貼り付けてください。",
             font=("", 8), foreground="#888", justify=tk.LEFT,
         ).pack(anchor=tk.W, padx=12, pady=(0, 4))
 

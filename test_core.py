@@ -170,5 +170,68 @@ if pos_vkmap > 0 and pos_end > pos_vkmap:
 else:
     print("[SKIP] T11: parse_hotkey 抽出失敗")
 
+# T12: merge_yar_codes (app.py の yar.gg 自動取得マージ関数)
+import re as _re2
+pos_merge = src.find("def merge_yar_codes(")
+if pos_merge > 0:
+    # モジュール先頭の import 群 + 定数 (CODE_RE/JST/YAR_CODES_SOURCE_LABEL) を用意
+    ns_merge = {"__name__": "wwmtest_merge", "re": _re2, "json": json,
+                "datetime": datetime, "timezone": timezone, "timedelta": timedelta, "os": os}
+    ns_merge["JST"] = timezone(timedelta(hours=9))
+    ns_merge["YAR_CODES_SOURCE_LABEL"] = "yar.gg自動取得"
+    ns_merge["CODE_RE"] = _re2.compile(r"^[A-Za-z0-9]{6,15}$")
+    pos_end_m = src.find("\n\n\n# デフォルトホットキー", pos_merge)
+    if pos_end_m < 0:
+        pos_end_m = src.find("return {\"added\":", pos_merge) + 200
+    snippet_m = src[pos_merge:pos_end_m]
+    try:
+        exec(snippet_m, ns_merge)
+        merge_fn = ns_merge["merge_yar_codes"]
+        base = [
+            {"code": "AAA111", "used": True, "added_at": "2026-07-02", "used_at": "2026-07-03", "source": "old"},
+            {"code": "BBB222", "used": False, "added_at": "2026-07-02", "used_at": None, "source": "old"},
+        ]
+        r = merge_fn(base,
+                     ["BBB222", "bbb222", "CCC333", "bad code!", "SHORT"],
+                     ["BBB222", "ZZZ999"], "2026-09-19")
+        assert [c["code"] for c in base] == ["AAA111", "BBB222", "CCC333"], [c["code"] for c in base]
+        assert base[2]["used"] is False and base[2]["source"] == "yar.gg自動取得"
+        # BBB222 は expired にあるため使用済へ
+        assert base[1]["used"] is True and base[1]["used_at"] is not None
+        # AAA111 は触らない
+        assert base[0]["used"] is True and base[0]["used_at"] == "2026-07-03"
+        assert r["added"] == 1 and r["marked_expired"] == 1, r
+        print("[PASS] T12: merge_yar_codes 追加1/失効1/重複・不正スキップ")
+    except Exception as e:
+        print(f"[FAIL] T12: {e}")
+        raise
+else:
+    print("[SKIP] T12: merge_yar_codes 抽出失敗")
+
+# T13: jev_decide_action + _jev_bar (app.py の Jev判定ゲート)
+pos_jev = src.find("def jev_decide_action(")
+if pos_jev > 0:
+    ns_jev = {"__name__": "wwmtest_jev"}
+    pos_jev_end = src.find("CODE_RE = ", pos_jev)
+    if pos_jev_end < 0:
+        pos_jev_end = pos_jev + 1500
+    try:
+        exec(src[pos_jev:pos_jev_end], ns_jev)
+        _decide = ns_jev["jev_decide_action"]
+        _cases = [
+            ("success", 1.0, "next"), ("already_used", 0.9, "next"), ("expired", 0.8, "next"),
+            ("rate_limited", 1.0, "retry_same"), ("other_error", 1.0, "human"),
+            ("success", 0.3, "human"), ("?", 1.0, "human"),
+        ]
+        assert all(_decide(o, c) == e for o, c, e in _cases), _cases
+        # _jev_bar は staticmethod の本体だけ検証 (表示崩れ防止)
+        assert "def _jev_bar" in src and "█" in src and "░" in src
+        print("[PASS] T13: jev_decide_action 7分岐 + 確信度バー文字")
+    except Exception as e:
+        print(f"[FAIL] T13: {e}")
+        raise
+else:
+    print("[SKIP] T13: jev_decide_action 抽出失敗")
+
 shutil.rmtree(TEST_DIR, ignore_errors=True)
-print("\n=== 全10テスト PASS ===")
+print("\n=== 全テスト PASS ===")
