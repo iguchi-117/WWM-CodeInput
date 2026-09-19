@@ -1017,6 +1017,11 @@ class CodeInputApp:
         ttk.Button(row2, text="↻ 再読込", command=lambda: self.reload_codes()).pack(side=tk.LEFT, padx=2)
         ttk.Button(row2, text="⚙ 設定", command=self.open_settings_dialog).pack(side=tk.LEFT, padx=2)
 
+        # 前提表示 (実測: 実デスクトップ操作で有効)
+        ttk.Label(toolbar_container,
+                  text="※ ホットキーは実デスクトップ操作で有効。ゲーム排他全画面では Alt+Tab で戻して使用。",
+                  foreground="gray", font=("", 8)).pack(anchor=tk.W, pady=(4, 0))
+
         # ステータス
         self.status_var = tk.StringVar(value="準備完了")
         status_lbl = ttk.Label(self.root, textvariable=self.status_var,
