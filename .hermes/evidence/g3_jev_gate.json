@@ -1,0 +1,14 @@
+{
+  "gate": {
+    "outcome": "already_used",
+    "confidence": 1.0,
+    "is_success": 0.02,
+    "certainty": 1.89,
+    "elapsed_ms": 712,
+    "usage": {
+      "input_tokens": 425,
+      "output_tokens": 90
+    }
+  },
+  "action": "next"
+}

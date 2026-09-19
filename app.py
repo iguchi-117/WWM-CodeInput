@@ -1045,6 +1045,15 @@ class CodeInputApp:
         ttk.Button(jev_btn_row, text="✓ 判定通りにマーク",
                    command=self.jev_apply_ui).pack(side=tk.LEFT, padx=2)
         self._jev_last = None  # 直近の判定結果 {"code","gate","action"}
+        # 自動入力 (CLI正本) の案内 — GUIからの二重ループ実装はしない (T5 thin統合)
+        self.jev_auto_var = tk.StringVar(value=(
+            "自動入力: python auto_redeem.py --loop --limit 3 "
+            "(下見) → --loop --limit 1 --yes --settle 2 (1件実投入+目視) "
+            "→ --loop --limit 3 --yes (連続)。JEV_API_KEY必須・間隔8秒既定。"
+        ))
+        ttk.Label(jev_frame, textvariable=self.jev_auto_var,
+                  font=("", 8), foreground="#666", wraplength=640,
+                  justify=tk.LEFT).pack(anchor=tk.W, pady=(4, 0))
 
         # Treeview
         table_frame = ttk.Frame(self.root, padding=6)

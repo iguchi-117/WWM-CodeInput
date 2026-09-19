@@ -146,7 +146,9 @@ WWM-CodeInput/
 ├── dist/               # PyInstaller 出力先
 │   └── WWMCodeInput.exe  # 配布用exe（18 MB）
 │
-├── test_core.py        # コアロジック単体テスト
+├── test_core.py        # コアロジック単体テスト (T1〜T13)
+├── test_auto_redeem.py # 自動入力ループ単体テスト (A1〜A11・ゲーム/通信不要)
+├── auto_redeem.py      # 自動入力CLI (Computer Use + Jev・連続投入の正本)
 └── README.md           # このファイル
 ```
 
@@ -239,6 +241,38 @@ with open("codes.json", "w", encoding="utf-8") as f:
   → `outcome(成功/使用済/期限切れ/頻度制限/他)` + 確信度バー + 次アクションを表示
 - 「✓ 判定通りにマーク」で `next` の場合のみ使用済へ（`retry_same/human` は何もしない）
 - 失敗時はキー・通信の理由を表示（既存データに触らない）
+- パネル下部の案内どおり、連続投入の正本は CLI (`auto_redeem.py --loop`)。GUIからの二重ループ実装はしない
+
+### 🤖 自動入力ループ（Computer Use + Jev）
+
+手入力サンプル実測（2件/7秒 ≒ 3〜4秒/件）に合わせ、1コードごとに
+**クリップボード貼付 → Space確定 → 確定直後キャプチャ → OCR → Jev判定 → マーク** を回す。
+`--yes` でのみ `codes.json` に保存（既定dry-run）。`conf < 0.5` は自動マークせず停止。
+
+```bash
+# 0. 前提: JEV_API_KEY を設定 (判定1件のみ課金・浪費防止)
+set JEV_API_KEY=...(表示・コミット禁止)
+
+# 1. 下見 (保存なし・ゲーム不要)
+python auto_redeem.py --loop --limit 3
+
+# 2. Jev疎通 (ゲーム不要・1件のみ)
+python auto_redeem.py --result-text "Already used. This code was claimed."
+
+# 3. 1件実投入+目視 (要ゲーム起動)
+python auto_redeem.py --loop --limit 1 --yes --settle 2
+
+# 4. 連続 (問題なければ3件まで。全件ループは初回やらない)
+python auto_redeem.py --loop --limit 3 --yes --interval 8 --settle 2
+
+# 確定直後キャプチャの範囲比較 (全画面 vs 中央。結果文の出現位置を実測で決める)
+python auto_redeem.py --shot shot_full.png --crop full
+python auto_redeem.py --shot shot_center.png --crop center
+```
+
+- 頻度制限 (`Operated too frequently`) が出たら同コード再試行 + 待機倍増（上限60秒）
+- `human` 判定（低conf・OCR空・その他エラー）は勝手に進めず停止。OCR文と判定をログに残す
+- winocr未導入時は `--result-text '...'` 併用で半自動継続（OCR必須化しない）
 
 ### 外部ファイル変更の自動検知
 - 5秒ごとに `codes.json` の mtime を確認
@@ -256,6 +290,7 @@ with open("codes.json", "w", encoding="utf-8") as f:
 
 ```bash
 python test_core.py
+python test_auto_redeem.py
 ```
 
 コアロジック10項目のテストが走ります:
