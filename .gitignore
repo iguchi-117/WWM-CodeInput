@@ -22,6 +22,9 @@ dist/codes.backup.json
 dist/settings.json
 dist/settings.json.bak
 
+# 一時退避バックアップ (*-backup-YYYYMMDD.json) はコミットしない
+*-backup-*.json
+
 # テスト用ログ
 _exe_log.txt
 _exe_stdout.txt
