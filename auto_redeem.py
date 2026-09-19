@@ -265,26 +265,62 @@ def set_clipboard(text: str) -> bool:
 
 
 def send_ctrl_v(delay_ms: int = 150) -> bool:
-    """フォーカス中ウィンドウへ Ctrl+V を SendInput で一括送出する。
-
-    旧 keybd_event 分割送出から SendInput 一括送出へ統一 (G4ペースト未達の切り分け)。
-    copy系のクリップボード経路と横並びで確認済み。戻り値: 4件送出で True。
-    """
-    try:
-        n = _vk_seq([(VK_CONTROL, 0), (VK_KEY_C, 0),
-                     (VK_KEY_C, KEYEVENTF_KEYUP), (VK_CONTROL, KEYEVENTF_KEYUP)])
-        time.sleep(delay_ms / 1000.0)
-        return n == 4
-    except Exception:
-        return False
+    """フォーカス中ウィンドウへ Ctrl+V を送る (send_paste への後方互換wrapper)。"""
+    return send_paste("ctrl_v", delay_ms=delay_ms)
 
 
 VK_SPACE = 0x20
 VK_ESCAPE = 0x1B
 VK_CONTROL = 0x11
 VK_KEY_C = 0x56
+VK_SHIFT = 0x10
+VK_INSERT = 0x2D
 KEYEVENTF_KEYUP = 0x0002
 RATE_WAIT_CAP_SEC = 60.0
+
+PASTE_METHODS = ("ctrl_v", "shift_insert", "type_text")
+
+
+def send_paste(method: str = "ctrl_v", delay_ms: int = 150) -> bool:
+    """貼付キー送出 (手段切替式・SendInput統一経路)。
+
+    - ctrl_v: Ctrl+V (既定・後方互換)
+    - shift_insert: Shift+Insert (Ctrl+V吸収時の代替)
+    - type_text:<text>: クリップボードを経由せず1文字ずつ直接送出
+      (貼付経路自体が吸収される場合の最終手段)
+    未知手段は False (fail closed)。
+    """
+    try:
+        if method == "ctrl_v":
+            seq = [(VK_CONTROL, 0), (VK_KEY_C, 0),
+                   (VK_KEY_C, KEYEVENTF_KEYUP), (VK_CONTROL, KEYEVENTF_KEYUP)]
+            n = _vk_seq(seq)
+            time.sleep(delay_ms / 1000.0)
+            return n == 4
+        elif method == "shift_insert":
+            seq = [(VK_SHIFT, 0), (VK_INSERT, 0),
+                   (VK_INSERT, KEYEVENTF_KEYUP), (VK_SHIFT, KEYEVENTF_KEYUP)]
+            n = _vk_seq(seq)
+            time.sleep(delay_ms / 1000.0)
+            return n == 4
+        elif method.startswith("type_text:"):
+            text = method[len("type_text:"):]
+            if not text:
+                return False
+            for ch in text:
+                vk = ord(ch.upper())
+                if not (0x30 <= vk <= 0x39 or 0x41 <= vk <= 0x5A):
+                    return False
+                n = _vk_seq([(vk, 0), (vk, KEYEVENTF_KEYUP)])
+                if n != 2:
+                    return False
+                time.sleep(0.03)
+            time.sleep(delay_ms / 1000.0)
+            return True
+        else:
+            return False
+    except Exception:
+        return False
 
 
 def _vk_seq(seq: list) -> int:
@@ -653,6 +689,8 @@ def main(argv: list | None = None) -> int:
     ap.add_argument("--shot-dir", default="", help="ループ中の確定直後PNG保存先 (既定 shots/)")
     ap.add_argument("--click-xy", default="", help="入力欄クリック座標 'x,y' (未指定ならクリックなし)")
     ap.add_argument("--tabs", type=int, default=0, help="投入前のTab送出回数 (既定0=なし)")
+    ap.add_argument("--paste-method", default="ctrl_v",
+                    help="貼付手段: ctrl_v | shift_insert | type_text (既定ctrl_v。吸収時は順に切替)")
     args = ap.parse_args(argv)
 
     def _field_cfg() -> dict:
@@ -763,8 +801,11 @@ def main(argv: list | None = None) -> int:
             if not set_clipboard(code):
                 print("clipboard失敗。中止 (未保存分あり)")
                 return False
-            ok_v = send_ctrl_v()
-            print(f"ctrl_v: {'OK' if ok_v else 'NG(送出件数不足)'}")
+            _pm = args.paste_method
+            if _pm == "type_text":
+                _pm = "type_text:" + code
+            ok_v = send_paste(_pm)
+            print("paste(%s): %s" % (_pm.split(":")[0], "OK" if ok_v else "NG(送出件数不足)"))
             # 切り分け②: 貼付直後キャプチャ (Space確定前・入力欄到達の証拠)
             try:
                 os.makedirs(shot_dir, exist_ok=True)
@@ -835,8 +876,8 @@ def main(argv: list | None = None) -> int:
     if not set_clipboard(code):
         print("clipboard失敗。中止 (未保存)")
         return 2
-    ok_v1 = send_ctrl_v()
-    print(f"ctrl_v: {'OK' if ok_v1 else 'NG(送出件数不足)'}")
+    ok_v1 = send_paste(args.paste_method)
+    print("paste(%s): %s" % (args.paste_method, "OK" if ok_v1 else "NG(送出件数不足)"))
     print(f"pasted: {code}")
     print("結果メッセージを確認し、--result-text '...' でJev判定 → マークへ進む (半自動)")
     print("※ 全自動連続投入は頻度制限・運用規約の確認後に有効化する")

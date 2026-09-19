@@ -223,6 +223,33 @@ finally:
 check("A10f focus_field設定ありはclick→tab", r1 is True and calls == [("click", 100, 200), ("tab", 1)], f"{calls} {r1}")
 check("A10f focus_field設定なしはnoop", r2 is True)
 
+# A10g: 貼付手段切替 (paste_method 注入・実送出なし)
+seqs2 = []
+orig_vk2 = ar._vk_seq
+ar._vk_seq = lambda seq: (seqs2.append(list(seq)), len(list(seq)))[1]
+try:
+    ok_cv = ar.send_paste("ctrl_v", delay_ms=0)
+    ok_si = ar.send_paste("shift_insert", delay_ms=0)
+    ok_bad = ar.send_paste("unknown_method", delay_ms=0)
+finally:
+    ar._vk_seq = orig_vk2
+check("A10g ctrl_vはCtrl down→V down/up→Ctrl up",
+      ok_cv is True and seqs2[0] == [(0x11, 0), (0x56, 0), (0x56, 2), (0x11, 2)], f"{seqs2}")
+check("A10g shift_insertはShift down→Insert down/up→Shift up",
+      ok_si is True and seqs2[1] == [(0x10, 0), (0x2D, 0), (0x2D, 2), (0x10, 2)], f"{seqs2}")
+check("A10g 未知手段はFalse", ok_bad is False)
+
+# A10h: type_text は1文字ずつ down/up で送出 (注入・実送出なし)
+seqs3 = []
+ar._vk_seq = lambda seq: (seqs3.append(list(seq)), len(list(seq)))[1]
+try:
+    ok_t = ar.send_paste("type_text:AB", delay_ms=0)
+finally:
+    ar._vk_seq = orig_vk2
+check("A10h type_textは2文字=2シーケンス",
+      ok_t is True and len(seqs3) == 2
+      and seqs3[0] == [(0x41, 0), (0x41, 2)] and seqs3[1] == [(0x42, 0), (0x42, 2)], f"{seqs3}")
+
 # A11: app.py側 jev_decide_action との一致 (重複片寄せの振る舞い同一)
 src_app = (Path(__file__).parent / "app.py").read_text(encoding="utf-8")
 pos = src_app.find("def jev_decide_action(")
