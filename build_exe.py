@@ -57,9 +57,18 @@ def main():
     else:
         print(f"\n[2/4] アイコン既存: {ICON_ICO}")
 
-    # 3. クリーンビルド
+    # 3. クリーンビルド (dist内のユーザーデータは退避・復元する)
     print("\n[3/4] クリーンビルド...")
+    _preserve = {}
     if DIST_DIR.exists():
+        for _name in ("codes.json", "codes.backup.json", "settings.json",
+                      "settings.json.bak", "_exe_log.txt", "_dbg.txt"):
+            _p = DIST_DIR / _name
+            if _p.exists():
+                try:
+                    _preserve[_name] = _p.read_bytes()
+                except OSError:
+                    pass
         run(f"rmdir /s /q {DIST_DIR}", check=False)
     if BUILD_DIR.exists():
         run(f"rmdir /s /q {BUILD_DIR}", check=False)
@@ -86,6 +95,14 @@ def main():
     # 結果確認
     exe_path = DIST_DIR / f"{EXE_NAME}.exe"
     if exe_path.exists():
+        # 退避したユーザーデータを復元 (空codes.jsonの上書き固定を防ぐ)
+        for _name, _data in _preserve.items():
+            try:
+                (DIST_DIR / _name).write_bytes(_data)
+            except OSError as exc:
+                print(f"  ⚠ {_name} の復元に失敗: {exc}")
+        if _preserve:
+            print(f"  📂 dist内ユーザーデータを復元: {', '.join(sorted(_preserve))}")
         size_mb = exe_path.stat().st_size / (1024 * 1024)
         print(f"\n{'=' * 60}")
         print(f"✅ ビルド成功!")

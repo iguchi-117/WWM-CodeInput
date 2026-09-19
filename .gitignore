@@ -13,10 +13,14 @@ build/
 # (WWM_TEST_USE_PYTHON=1 で生成される temp フォルダは .git 管理外)
 
 # Settings/codes.json は EXE と同じフォルダで管理されているため、
-# リポジトリには含めない
+# リポジトリには含めない (ルートも dist 配下も同様)
 settings.json
 codes.json
 codes.backup.json
+dist/codes.json
+dist/codes.backup.json
+dist/settings.json
+dist/settings.json.bak
 
 # テスト用ログ
 _exe_log.txt
