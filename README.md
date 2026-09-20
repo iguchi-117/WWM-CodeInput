@@ -147,8 +147,8 @@ WWM-CodeInput/
 │   └── WWMCodeInput.exe  # 配布用exe（18 MB）
 │
 ├── test_core.py        # コアロジック単体テスト (T1〜T13)
-├── test_auto_redeem.py # 自動入力ループ単体テスト (A1〜A11・ゲーム/通信不要)
-├── auto_redeem.py      # 自動入力CLI (Computer Use + Jev・連続投入の正本)
+├── test_auto_redeem.py # 支援CLI単体テスト (B1〜B12・ゲーム不要)
+├── auto_redeem.py      # コード入力支援CLI (下見・貼付テスト・キャプチャ)
 └── README.md           # このファイル
 ```
 
@@ -235,44 +235,18 @@ with open("codes.json", "w", encoding="utf-8") as f:
 - 同じコード（大文字小文字区別なし）が既にあれば追加ダイアログで警告
 - `codes.json` を直接編集した場合も、起動時にチェック
 
-### Jev 判定パネル（自動入力モードの可視化）
+### 🖥 デスクトップ支援CLI (auto_redeem.py)
 
-- Treeview下の「🤖 Jev 判定」パネルにゲームの結果メッセージを貼って「🔍 判定」
-  → `outcome(成功/使用済/期限切れ/頻度制限/他)` + 確信度バー + 次アクションを表示
-- 「✓ 判定通りにマーク」で `next` の場合のみ使用済へ（`retry_same/human` は何もしない）
-- 失敗時はキー・通信の理由を表示（既存データに触らない）
-- パネル下部の案内どおり、連続投入の正本は CLI (`auto_redeem.py --loop`)。GUIからの二重ループ実装はしない
-
-### 🤖 自動入力ループ（Computer Use + Jev）
-
-手入力サンプル実測（2件/7秒 ≒ 3〜4秒/件）に合わせ、1コードごとに
-**クリップボード貼付 → Space確定 → 確定直後キャプチャ → OCR → Jev判定 → マーク** を回す。
-`--yes` でのみ `codes.json` に保存（既定dry-run）。`conf < 0.5` は自動マークせず停止。
+手動フロー（Alt+G → 人間 Ctrl+V）の補助ツール。codes.json への保存経路は持たない。
 
 ```bash
-# 0. 前提: JEV_API_KEY を設定 (判定1件のみ課金・浪費防止)
-set JEV_API_KEY=...(表示・コミット禁止)
-
-# 1. 下見 (保存なし・ゲーム不要)
-python auto_redeem.py --loop --limit 3
-
-# 2. Jev疎通 (ゲーム不要・1件のみ)
-python auto_redeem.py --result-text "Already used. This code was claimed."
-
-# 3. 1件実投入+目視 (要ゲーム起動)
-python auto_redeem.py --loop --limit 1 --yes --settle 2
-
-# 4. 連続 (問題なければ3件まで。全件ループは初回やらない)
-python auto_redeem.py --loop --limit 3 --yes --interval 8 --settle 2
-
-# 確定直後キャプチャの範囲比較 (全画面 vs 中央。結果文の出現位置を実測で決める)
-python auto_redeem.py --shot shot_full.png --crop full
-python auto_redeem.py --shot shot_center.png --crop center
+python auto_redeem.py --list-windows                 # 可視ウィンドウ一覧 + ゲーム検出
+python auto_redeem.py --dry-run --limit 3            # 次の未使用コードを表示 (保存なし)
+python auto_redeem.py --once                         # 1件貼付テスト (要ゲーム起動・保存なし)
+python auto_redeem.py --shot shot.png --crop center  # 確定直後キャプチャ
 ```
 
-- 頻度制限 (`Operated too frequently`) が出たら同コード再試行 + 待機倍増（上限60秒）
-- `human` 判定（低conf・OCR空・その他エラー）は勝手に進めず停止。OCR文と判定をログに残す
-- winocr未導入時は `--result-text '...'` 併用で半自動継続（OCR必須化しない）
+- 実デスクトップ操作が前提。ゲーム排他全画面では Alt+Tab で戻して使用
 
 ### 外部ファイル変更の自動検知
 - 5秒ごとに `codes.json` の mtime を確認
@@ -293,7 +267,7 @@ python test_core.py
 python test_auto_redeem.py
 ```
 
-コアロジック10項目のテストが走ります:
+コアロジック13項目 (test_core) + 支援CLI 25項目 (test_auto_redeem) が走ります:
 - 空JSON保存/ロード
 - 複数件の追加・永続化
 - 使用済マーク
@@ -303,6 +277,8 @@ python test_auto_redeem.py
 - アトミック書き込み
 - 全件使用済時の挙動
 - 不正JSONのフォールバック
+- Jev撤去の残存参照なし (app.py / auto_redeem.py)
+- dry-run表示・無保存 / 貼付ラダー / クロップ / focus診断 (ゲーム不要)
 
 ---
 

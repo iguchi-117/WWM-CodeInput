@@ -69,3 +69,5 @@
 - 手入力速度の実測 (約3〜4秒/件) に対し interval既定8秒は控えめだが、頻度制限 (`Operated too frequently`) 回避を優先し据え置く。短縮は実測でrateが出ないことを確認してから。
 - 結果メッセージの出現位置が動画で特定できないため、キャプチャ範囲を推測固定せず `--crop` 比較で実測決定する。
 - ユーザー沈黙時は本計画の推奨案で進行し、切替は一言で受け付ける。
+- jev-ultrafast学習 (2026-09-20, `hermes-agent-misc-output/jev-ultrafast` にclone): 本家はブラウザDOM前提 (snapshot.js原子スナップショット+CDP実行+Browser Harness/Chrome) のため、デスクトップクライアント相手の本PJにはそのまま転用不可。現行 `auto_redeem.py` の「DOM state spaceは使えない→キャプチャ+OCR」方針を支持。転用可能な核は (1) 操作+対象のspeculative fan-outを1リクエスト化 (2) `validate_choice` の確率検証 (3) stale-decision破棄とmutation非リトライ (4) DONEは独立検証なしに成功証拠としない。本PJのJev判定は分類ゲート特化で正しく、fan-out化は結果文言の出現位置が実測確定するまで見送る。
+- 追記 (2026-09-20 ユーザー確定): Jev撤去。「Jevは意味がない→削除」「自動入力に寄与しないなら削除」。app.py / auto_redeem.py の判定系 (パネル・classify・decide・JEV_*・判定系テスト) と、判定がJev一択だった連続投入ループを撤去。支援CLIは下見/貼付テスト/キャプチャのみで保存経路なし。自動投入の再開はgit履歴 (966df50時点) から。

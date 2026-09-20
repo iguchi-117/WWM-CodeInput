@@ -208,30 +208,15 @@ if pos_merge > 0:
 else:
     print("[SKIP] T12: merge_yar_codes 抽出失敗")
 
-# T13: jev_decide_action + _jev_bar (app.py の Jev判定ゲート)
-pos_jev = src.find("def jev_decide_action(")
-if pos_jev > 0:
-    ns_jev = {"__name__": "wwmtest_jev"}
-    pos_jev_end = src.find("CODE_RE = ", pos_jev)
-    if pos_jev_end < 0:
-        pos_jev_end = pos_jev + 1500
-    try:
-        exec(src[pos_jev:pos_jev_end], ns_jev)
-        _decide = ns_jev["jev_decide_action"]
-        _cases = [
-            ("success", 1.0, "next"), ("already_used", 0.9, "next"), ("expired", 0.8, "next"),
-            ("rate_limited", 1.0, "retry_same"), ("other_error", 1.0, "human"),
-            ("success", 0.3, "human"), ("?", 1.0, "human"),
-        ]
-        assert all(_decide(o, c) == e for o, c, e in _cases), _cases
-        # _jev_bar は staticmethod の本体だけ検証 (表示崩れ防止)
-        assert "def _jev_bar" in src and "█" in src and "░" in src
-        print("[PASS] T13: jev_decide_action 7分岐 + 確信度バー文字")
-    except Exception as e:
-        print(f"[FAIL] T13: {e}")
-        raise
-else:
-    print("[SKIP] T13: jev_decide_action 抽出失敗")
+# T13: Jev撤去の残存参照チェック (ユーザー指示「Jevの機能は意味がないから削除」)
+for _name, _text in (("app.py", src),
+                     ("auto_redeem.py", Path("auto_redeem.py").read_text(encoding="utf-8"))):
+    _low = _text.lower()
+    _hits = [ln.strip()[:80] for ln in _text.splitlines() if "jev" in ln.lower()]
+    assert "jev" not in _low, f"{_name} に Jev 参照残存: {_hits}"
+    assert "JEV_API_KEY" not in _text
+    assert "systemone" not in _low and "typesafe" not in _low
+print("[PASS] T13: app.py / auto_redeem.py に Jev 参照なし (撤去確認)")
 
 shutil.rmtree(TEST_DIR, ignore_errors=True)
 print("\n=== 全テスト PASS ===")

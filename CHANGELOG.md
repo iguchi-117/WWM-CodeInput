@@ -1,5 +1,16 @@
 # Changelog — WWM-CodeInput
 
+## 2026-09-20 — Jev機能を撤去 (ユーザー指示「Jevは意味がない→削除」「無駄な機能はいらねえ」)
+
+- 撤去: app.py の Jev判定パネル・jev_classify_redeem・jev_decide_action・JEV_* 定数一式、
+  auto_redeem.py の jev_classify・decide_action・OUTCOME_CRITERIA・JEV_* 定数一式。
+- 連鎖撤去: 判定がJev一択だった連続投入ループ (--loop/--interval/--settle/--conf-floor/--yes/
+  --result-text) と未使用になった save_codes を削除。支援CLIは下見(--dry-run)・1件貼付テスト
+  (--once)・キャプチャ(--shot)のみで、codes.json への保存経路を持たない。
+- テスト: test_core T13を「Jev参照なし」ガードに置換。test_auto_redeem は撤去後APIのみ検証
+  (B1〜B12・25項目)。回帰は両方全緑。
+- 正規フロー=手動 (Alt+G → 人間 Ctrl+V) は不変。自動投入の再開はgit履歴から。
+
 ## 2026-09-20 — 手動正規でリリース、自動投入は見送り (a093304)
 
 - 手動導線 PASS: 再ビルドexeで Alt+G → QATEST001/002 をクリップボード独立読みで確認、
