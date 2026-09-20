@@ -71,3 +71,12 @@
 - ユーザー沈黙時は本計画の推奨案で進行し、切替は一言で受け付ける。
 - jev-ultrafast学習 (2026-09-20, `hermes-agent-misc-output/jev-ultrafast` にclone): 本家はブラウザDOM前提 (snapshot.js原子スナップショット+CDP実行+Browser Harness/Chrome) のため、デスクトップクライアント相手の本PJにはそのまま転用不可。現行 `auto_redeem.py` の「DOM state spaceは使えない→キャプチャ+OCR」方針を支持。転用可能な核は (1) 操作+対象のspeculative fan-outを1リクエスト化 (2) `validate_choice` の確率検証 (3) stale-decision破棄とmutation非リトライ (4) DONEは独立検証なしに成功証拠としない。本PJのJev判定は分類ゲート特化で正しく、fan-out化は結果文言の出現位置が実測確定するまで見送る。
 - 追記 (2026-09-20 ユーザー確定): Jev撤去。「Jevは意味がない→削除」「自動入力に寄与しないなら削除」。app.py / auto_redeem.py の判定系 (パネル・classify・decide・JEV_*・判定系テスト) と、判定がJev一択だった連続投入ループを撤去。支援CLIは下見/貼付テスト/キャプチャのみで保存経路なし。自動投入の再開はgit履歴 (966df50時点) から。
+
+## 9. スコープ削減 (2026-09-20 ユーザー指示 Jev撤去) と追加判断
+
+- 撤去はコード削除 (非表示化ではない): app.py −216行 (🤖パネル・判定/マークボタン・JEV_*定数) / auto_redeem.py −422行 (判定系＋Jev一択だった連続ループ --loop/--interval/--settle/--conf-floor/--yes/--result-text と未使用save_codes)。ループは「判定なしでは盲目的貼付＝検証手段なし」として同時撤去 (Dv01判断を承認)。復元は git 966df50 から1コミット。
+- 撤去で消える欠陥クラス (いずれも自動ループ専用機構のため解消扱い): 判定不能時の人間確認停止 / rate_limited 倍増待機 / OCR空時の自動マーク抑制。
+- 手戻りなし: 手動正規フロー (Alt+G→人間Ctrl+V)・クリップボード機構・貼付手段ラダー (--paste-method) は不変。支援CLIは下見 (--dry-run)・貼付テスト (--once)・キャプチャ (--shot/--crop) のみで保存経路なし。
+- ゲートretired (証跡保持のうえ廃止): G3 (Jev実投下 — 証跡 g3_jev_gate.json) / G4自動投入 (実機目視による確定 — 証跡 g4_fail/ 14枚)。新ゲート: test_core 13/13・test_auto_redeem 25/25・出荷コードJev参照0・dry-run保存なし・exe起動・人間Alt+G押下1回。
+- 自動ペースト (Alt+Shift+G) = 案A採用 (2026-09-20): 実測注記1行 (「合成Ctrl+Vはゲームクライアントでは吸収・メモ帳等では到達／ゲーム内の貼付は手動Ctrl+V」)＋ラベル修正 (「ゲームに送信」→「送信」) で維持。根拠: ゲーム外に実測有効経路・既定OFF・差分2行。ゲーム専用に限定する場合の撤去は次タスク1本で可。
+- 残件: 人間Alt+G押下チェック1回 (案A再ビルド後の最終exe。未使用コード1件入り・本体codes.json不可侵の手順をDv01が用意)。
